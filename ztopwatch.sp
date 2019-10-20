@@ -1,419 +1,290 @@
+
+#define PLUGIN_NAME				"Zone Stopwatch"
+#define PLUGIN_AUTHOR			"GameChaos"
+#define PLUGIN_DESCRIPTION		"A stopwatch that uses zones."
+#define PLUGIN_VERSION			"1.00"
+#define PLUGIN_URL				"https://bitbucket.org/GameChaos/zone-stopwatch"
+
+#define C_WHITE					{ 255, 255, 255, 255 }
+#define C_GREEN					{   0, 255,   0, 255 }
+#define C_RED					{ 255,   0,   0, 255 }
+
+#define PREFIX					"{default}[{olive}GC{default}]"
+
 #include <sourcemod>
 #include <sdktools>
-#include <sdkhooks>
+#include <gamechaos>
+#include <colors>
 
-// not required to have either
 #undef REQUIRE_PLUGIN
 #include <gokz/core>
 #include <kztimer>
 
-public Plugin myinfo = 
-{
-	name = "Zone Stopwatch", 
-	author = "GameChaos", 
-	description = "A stopwatch with zones.", 
-	version = "0.2"
-}
+#pragma semicolon 1
+#pragma newdecls required
 
-#define CHOICE0 	"#choice0"
-#define CHOICE1 	"#choice1"
-#define CHOICE2 	"#choice2"
-#define CHOICE3 	"#choice3"
-#define CHOICE4 	"#choice4"
-#define CHOICE5 	"#choice5"
-#define CHOICE6 	"#choice6"
-#define GREEN		{ 0, 255, 0, 255 }
-#define RED			{ 255, 0, 0, 255 }
-#define OUTOFRANGE	99999.0
-#define MAX_RADIUS	160.0
-
-enum
+public Plugin myinfo =
 {
-	Mm_Origin,
-	Mm_Eye_Dir,
-	Mm_Radius,
-	MM_COUNT
-}
-
-char g_szMeasureMode[][] = 
-{
-	"Measuring mode - Origin",
-	"Measuring mode - Eye dir",
-	"Measuring mode - Eye radius"
+	name = PLUGIN_NAME,
+	author = PLUGIN_AUTHOR,
+	description = PLUGIN_DESCRIPTION,
+	version = PLUGIN_VERSION,
+	url = PLUGIN_URL
 };
 
-float g_fStartCorner1[MAXPLAYERS + 1][3];
-float g_fStartCorner2[MAXPLAYERS + 1][3];
-float g_fEndCorner1[MAXPLAYERS + 1][3];
-float g_fEndCorner2[MAXPLAYERS + 1][3];
-
-float g_fPlayerPos[MAXPLAYERS + 1][3];
-
-float corners[8][3];
-float corner[2][3];
-
-float g_fTimerStart[MAXPLAYERS + 1];
-
-int pairs[8][3] =  {  { 0, 0, 0 }, { 1, 0, 0 }, { 1, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } };
-int edges[12][2] =  {  { 0, 1 }, { 0, 3 }, { 0, 4 }, { 2, 1 }, { 2, 3 }, { 2, 6 }, { 5, 4 }, { 5, 6 }, { 5, 1 }, { 7, 4 }, { 7, 6 }, { 7, 3 } };
-
-int g_iMeasureMode[MAXPLAYERS + 1];
-
-bool g_bStartCorner1[MAXPLAYERS + 1];
-bool g_bStartCorner2[MAXPLAYERS + 1];
-
-bool g_bEndCorner1[MAXPLAYERS + 1];
-bool g_bEndCorner2[MAXPLAYERS + 1];
+bool g_bLateLoad;
+int g_iBeam;
 
 bool g_bStartOnJump[MAXPLAYERS + 1];
 bool g_bStopOnLand[MAXPLAYERS + 1];
-bool g_bEditStartZone[MAXPLAYERS + 1];
 
-static int g_Beam;
+float g_fStartTime[MAXPLAYERS + 1];
+float g_fEndTime[MAXPLAYERS + 1];
 
-Handle g_hTimer_ShowZones[MAXPLAYERS + 1];
+enum struct Zone
+{
+	float point1[3];
+	float point2[3];
+	float mins[3];
+	float maxs[3];
+	bool point1_active;
+	bool point2_active;
+	
+	void SetPoint1(int client)
+	{
+		this.SetPoint(client, this.point1);
+		this.point1_active = true;
+		CPrintToChat(client, "%s {grey}Point #{lime}1{grey} set!", PREFIX);
+		
+		if (this.point1_active && this.point2_active)
+		{
+			CalculateAABBMinsMaxs(this.point1, this.point2, this.mins, this.maxs);
+		}
+	}
+	
+	void SetPoint2(int client)
+	{
+		this.SetPoint(client, this.point2);
+		this.point2_active = true;
+		CPrintToChat(client, "%s {grey}Point #{lime}2{grey} set!", PREFIX);
+		
+		if (this.point1_active && this.point2_active)
+		{
+			CalculateAABBMinsMaxs(this.point1, this.point2, this.mins, this.maxs);
+		}
+	}
+	
+	void SendPoint1Square(int client, int modelIndex, const int colour[4])
+	{
+		SendBeamSquare(client, modelIndex, this.point1, colour);
+	}
+	
+	void SendPoint2Square(int client, int modelIndex, const int colour[4])
+	{
+		SendBeamSquare(client, modelIndex, this.point2, colour);
+	}
+	
+	void SendBeamZone(int client, int modelIndex, const int colour[4])
+	{
+		if (this.point1_active && this.point2_active)
+		{
+			TE_SendBeamBox(client, view_as<float>({ 0.0, 0.0, 0.0 }), this.point1, this.point2, modelIndex, 0, 1.0, 2.0, colour, 2.0);
+		}
+	}
+	
+	void SetPoint(int client, float point[3])
+	{
+		float fOrigin[3];
+		GetClientEyePosition(client, fOrigin);
+		float fAngles[3];
+		GetClientEyeAngles(client, fAngles);
+		float fMins[3] = { -16.0, -16.0, 0.0 };
+		float fMaxs[3] = { 16.0, 16.0, 0.0 };
+		
+		TraceHullDirection(fOrigin, fAngles, fMins, fMaxs, point, 256.0);
+	}
+	
+	// Reset zone positions
+	void Reset()
+	{
+		this.point1_active = false;
+		this.point2_active = false;
+		this.point1 = NULL_VECTOR;
+		this.point2 = NULL_VECTOR;
+	}
+}
+
+Zone g_zoneStart[MAXPLAYERS + 1];
+Zone g_zoneEnd[MAXPLAYERS + 1];
+
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{
+	g_bLateLoad = late;
+}
 
 public void OnPluginStart()
 {
-	RegConsoleCmd("sm_ztopwatch", Command_Ztopwatch);
-}
-
-public void OnClientConnected(int client)
-{
-	resetVars(client);
-}
-
-public void resetVars(int client)
-{
-	g_bStartCorner1[client] = false;
-	g_bStartCorner2[client] = false;
-	g_bEndCorner1[client] = false;
-	g_bEndCorner2[client] = false;
-	
-	if (g_hTimer_ShowZones[client] != null)
-	{
-		delete g_hTimer_ShowZones[client];
-		g_hTimer_ShowZones[client] = null;
-	}
-	
-	for (int i = 0; i <= MaxClients; i++)
-	{
-		g_fStartCorner1[i] = view_as<float>( { OUTOFRANGE, OUTOFRANGE, OUTOFRANGE } );
-		g_fStartCorner2[i] = view_as<float>( { OUTOFRANGE, OUTOFRANGE, OUTOFRANGE } );
-		g_fEndCorner1[i] = view_as<float>( { OUTOFRANGE, OUTOFRANGE, OUTOFRANGE } );
-		g_fEndCorner2[i] = view_as<float>( { OUTOFRANGE, OUTOFRANGE, OUTOFRANGE } );
-	}
+	RegConsoleCmd("sm_ztopwatch", Command_SmZtopwatch);
+	HookEvent("player_jump", Event_PlayerJump);
 }
 
 public void OnConfigsExecuted()
 {
-	g_Beam = PrecacheModel("materials/sprites/laser.vmt", true);
-}
-
-public void setCorner(int client, float vecCorner[3], int measureMode)
-{
-	if (measureMode == Mm_Origin)
-	{
-		GetClientAbsOrigin(client, vecCorner);
-		for (int i = 0; i < 3; i++)
-		{
-			vecCorner[i] = RoundToNearest(vecCorner[i]) + 0.0
-		}
-	}
-	else if (measureMode == Mm_Eye_Dir)
-	{
-		float eyeAngles[3];
-		GetClientEyePosition(client, vecCorner);
-		GetClientEyeAngles(client, eyeAngles);
-		
-		TR_TraceRayFilter(vecCorner, eyeAngles, MASK_PLAYERSOLID, RayType_Infinite, TraceEntityFilterPlayer);
-		if (TR_DidHit())
-		{
-			TR_GetEndPosition(vecCorner);
-		}
-	}
-	else if (measureMode == Mm_Radius)
-	{
-		float eyeAngles[3];
-		GetClientEyePosition(client, vecCorner);
-		GetClientEyeAngles(client, eyeAngles);
-		
-		GetAngleVectors(eyeAngles, eyeAngles, NULL_VECTOR, NULL_VECTOR);
-		NormalizeVector(eyeAngles, eyeAngles);
-		ScaleVector(eyeAngles, MAX_RADIUS);
-		
-		TR_TraceRayFilter(vecCorner, eyeAngles, MASK_PLAYERSOLID, RayType_EndPoint, TraceEntityFilterPlayer);
-		if (TR_DidHit())
-		{
-			TR_GetEndPosition(vecCorner);
-		}
-	}
-}
-
-public int MenuHandler1(Menu menu, MenuAction action, int param1, int param2)
-{
-	switch (action)
-	{
-		case MenuAction_Select:
-		{
-			char info[32];
-			menu.GetItem(param2, info, sizeof(info));
-			if (StrEqual(info, CHOICE0))
-			{
-				g_bEditStartZone[param1] = !g_bEditStartZone[param1];
-				ShowMenu(param1);
-			}
-			else if (StrEqual(info, CHOICE1))
-			{
-				//setCorner(param1, g_fStartCorner2[param1]);
-				//g_bStartCorner2[param1] = true;
-				resetVars(param1);
-				ShowMenu(param1);
-			}
-			else if (StrEqual(info, CHOICE2))
-			{
-				g_bStartOnJump[param1] = !g_bStartOnJump[param1];
-				ShowMenu(param1);
-			}
-			else if (StrEqual(info, CHOICE3))
-			{
-				g_bStopOnLand[param1] = !g_bStopOnLand[param1];
-				ShowMenu(param1);
-			}
-			else if (StrEqual(info, CHOICE4))
-			{
-				g_iMeasureMode[param1]++;
-				if (g_iMeasureMode[param1] >= MM_COUNT)
-				{
-					g_iMeasureMode[param1] = 0;
-				}
-				ShowMenu(param1);
-			}
-		}
-		
-		case MenuAction_Cancel:
-		{
-			PrintToServer("[ztopwatch] Client %d's menu was cancelled for reason %d", param1, param2);
-		}
-		
-		case MenuAction_End:
-		{
-			delete menu;
-		}
-	}
-	return 0;
-}
-
-public Action Timer_ShowZones(Handle timer, any serial)
-{
-	int client = GetClientFromSerial(serial);
-	int colour[4];
+	g_iBeam = PrecacheModel("materials/sprites/laser.vmt", true);
 	
-	if (IsTimerRunning(client))
+	for (int client = 1; client <= MaxClients; client++)
 	{
-		return Plugin_Continue;
-	}
-	
-	if ((g_bStartCorner1[client] && g_bStartCorner2[client]) || (g_bEndCorner1[client] && g_bEndCorner2[client]))
-	{
-		for (int i = 0; i < 2; i++)
+		if (IsValidClient(client))
 		{
-			if (i == 0)
-			{
-				corner[0] = g_fStartCorner1[client]
-				corner[1] = g_fStartCorner2[client]
-				colour = GREEN;
-			}
-			else if (i == 1)
-			{
-				corner[0] = g_fEndCorner1[client]
-				corner[1] = g_fEndCorner2[client]
-				colour = RED;
-			}
-			for (int l = 0; l < 8; l++)
-			{
-				corners[l][0] = corner[pairs[l][0]][0];
-				corners[l][1] = corner[pairs[l][1]][1];
-				corners[l][2] = corner[pairs[l][2]][2];
-			}
-			for (int l = 0; l < 12; l++)
-			{
-				TE_SetupBeamPoints(corners[edges[l][0]], corners[edges[l][1]], g_Beam, 0, 0, 0, 0.2, 3.0, 3.0, 10, 0.0, colour, 0);
-				TE_SendToClient(client, 0.0);
-			}
+			OnClientConnected(client);
 		}
 	}
-	
-	return Plugin_Continue;
 }
 
-public void OnPlayerRunCmdPost(int client, int buttons, int impulse, const float vel[3], const float angles[3], int weapon, int subtype, int cmdnum, int tickcount, int seed, const int mouse[2])
+public void OnClientConnected(int client)
 {
-	if (!IsValidClient(client))
+	ResetVars(client);
+}
+
+public void Event_PlayerJump(Event event, const char[] name, bool dontBroadcast)
+{
+	int client = GetClientOfUserId(event.GetInt("userid"));
+	
+	if (!g_bStartOnJump[client])
 	{
 		return;
 	}
 	
-	static bool bJumped[MAXPLAYERS + 1];
-	static bool bLastInJump[MAXPLAYERS + 1];
-	static int iButtonPressed[MAXPLAYERS + 1];
-	
-	iButtonPressed[client] = GetEntProp(client, Prop_Data, "m_afButtonPressed");
-	
-	if (iButtonPressed[client] & IN_ATTACK)
+	if (!g_zoneStart[client].point1_active || !g_zoneStart[client].point2_active
+	 || !g_zoneEnd[client].point1_active || !g_zoneEnd[client].point2_active)
 	{
-		if (g_bEditStartZone[client])
-		{
-			setCorner(client, g_fStartCorner1[client], g_iMeasureMode[client]);
-			g_bStartCorner1[client] = true;
-		}
-		else
-		{
-			setCorner(client, g_fEndCorner1[client], g_iMeasureMode[client]);
-			g_bEndCorner1[client] = true;
-		}
-	}
-	else if (iButtonPressed[client] & IN_ATTACK2)
-	{
-		if (g_bEditStartZone[client])
-		{
-			setCorner(client, g_fStartCorner2[client], g_iMeasureMode[client]);
-			g_bStartCorner1[client] = true;
-		}
-		else
-		{
-			setCorner(client, g_fEndCorner2[client], g_iMeasureMode[client]);
-			g_bEndCorner2[client] = true;
-		}
+		return;
 	}
 	
-	if (g_fStartCorner1[client][2] == g_fStartCorner2[client][2] && g_fStartCorner1[client][2] != OUTOFRANGE)
-	{
-		g_fStartCorner2[client][2] += 16.0;
-	}
-	if (g_fEndCorner1[client][2] == g_fEndCorner2[client][2] && g_fEndCorner1[client][2] != OUTOFRANGE)
-	{
-		g_fEndCorner2[client][2] += 16.0;
-	}
-	
-	bJumped[client] = !bLastInJump[client] && GetEntityFlags(client) & FL_ONGROUND;
-	
-	if ((g_bStartCorner1[client] && g_bStartCorner2[client]) || (g_bEndCorner1[client] && g_bEndCorner2[client]))
-	{
-		if (g_hTimer_ShowZones[client] == null)
-		{
-			g_hTimer_ShowZones[client] = CreateTimer(0.2, Timer_ShowZones, GetClientSerial(client), TIMER_REPEAT);
-		}
-	}
-	
-	if (g_bStartCorner1[client] && g_bStartCorner2[client] && g_bEndCorner1[client] && g_bEndCorner2[client])
-	{
-		GetClientAbsOrigin(client, g_fPlayerPos[client]);
-		
-		if (PointIsInCuboid(g_fPlayerPos[client], g_fStartCorner1[client], g_fStartCorner2[client]))
-		{
-			if (g_bStartOnJump[client])
-			{
-				if (bJumped[client])
-				{
-					g_fTimerStart[client] = GetEngineTime();
-				}
-			}
-			else
-			{
-				g_fTimerStart[client] = GetEngineTime();
-			}
-		}
-		else if (PointIsInCuboid(g_fPlayerPos[client], g_fEndCorner1[client], g_fEndCorner2[client]) && 
-						   g_fTimerStart[client] != 0.0 && GetEngineTime() != g_fTimerStart[client])
-		{
-			if (g_bStopOnLand[client])
-			{
-				if (GetEntityFlags(client) & FL_ONGROUND)
-				{
-					float time;
-					time = GetEngineTime() - g_fTimerStart[client];
-					PrintToChat(client, "[KZ] Elapsed time is %f.", time);
-					g_fTimerStart[client] = 0.0;
-				}
-			}
-			else
-			{
-				float time;
-				time = GetEngineTime() - g_fTimerStart[client];
-				PrintToChat(client, "[KZ] Elapsed time is %f.", time);
-				g_fTimerStart[client] = 0.0;
-			}
-		}
-	}
-	else if (g_hTimer_ShowZones[client] != null)
-	{
-		delete g_hTimer_ShowZones[client];
-		g_hTimer_ShowZones[client] = null;
-	}
-	
-	bLastInJump[client] = !!(buttons & IN_JUMP);
+	TryStartingTimer(client);
 }
 
-public Action Command_Ztopwatch(int client, int args)
+public void OnPlayerRunCmdPost(int client, int buttons, int impulse, const float vel[3], const float angles[3], int weapon, int subtype, int cmdnum, int tickcount, int seed, const int mouse[2])
 {
-	ShowMenu(client);
-	return Plugin_Handled;
+	if (!IsValidClientExt(client, true)
+		|| IsTimerRunning(client))
+	{
+		return;
+	}
+	
+	// refresh zone every half second
+	if (!(GetGameTickCount() % RoundFloat(0.5 / GetTickInterval())))
+	{
+		g_zoneStart[client].SendBeamZone(client, g_iBeam, C_GREEN);
+		g_zoneEnd[client].SendBeamZone(client, g_iBeam, C_RED);
+	}
+	
+	TimeZones(client);
 }
 
-public ShowMenu(int client)
+// =============
+//   FUNCTIONS
+// =============
+
+// timing and stuff happens here
+void TimeZones(int client)
 {
-	Menu menu = new Menu(MenuHandler1, MENU_ACTIONS_ALL);
-	menu.Pagination = MENU_NO_PAGINATION;
-	menu.SetTitle("Ztopwatch\n+attack to set 1st corner\n+attack2 to set 2nd corner");
-	if (g_bEditStartZone[client])
-		menu.AddItem(CHOICE0, "Current zone - Start");
-	else
-		menu.AddItem(CHOICE0, "Current zone - End");
+	if (!g_zoneStart[client].point1_active || !g_zoneStart[client].point2_active
+	 || !g_zoneEnd[client].point1_active || !g_zoneEnd[client].point2_active)
+	{
+		return;
+	}
 	
-	menu.AddItem(CHOICE1, "Reset zones");
+	float fPlayerMins[3];
+	float fPlayerMaxs[3];
+	GetClientMins(client, fPlayerMins);
+	GetClientMaxs(client, fPlayerMaxs);
 	
-	if (g_bStartOnJump[client])
-		menu.AddItem(CHOICE2, "Start timer on jump - ON");
-	else
-		menu.AddItem(CHOICE2, "Start timer on jump - OFF");
+	if (!g_bStartOnJump[client])
+	{
+		TryStartingTimer(client);
+	}
 	
 	if (g_bStopOnLand[client])
-		menu.AddItem(CHOICE3, "Stop timer on land - ON");
-	else
-		menu.AddItem(CHOICE3, "Stop timer on land - OFF");
-	
-	menu.AddItem(CHOICE4, g_szMeasureMode[g_iMeasureMode[client]]);
-	
-	menu.ExitButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-public bool PointIsInCuboid(float ppos[3], float corner0[3], float corner1[3])
-{
-	float min[3];
-	float max[3];
-	
-	for (int i = 0; i < 3; i++)
 	{
-		if (corner0[i] < corner1[i])
+		if (GetEntityFlags(client) & FL_ONGROUND
+			&& TryEndingTimer(client))
 		{
-			min[i] = corner0[i];
-			max[i] = corner1[i];
-		}
-		else if (corner0[i] > corner1[i])
-		{
-			min[i] = corner1[i];
-			max[i] = corner0[i];
+			OnTimerEnd(client);
 		}
 	}
+	else if (TryEndingTimer(client))
+	{
+		OnTimerEnd(client);
+	}
+}
+
+void OnTimerEnd(int client)
+{
+	char szTime[16];
+	FormatTimeHHMMSS(g_fEndTime[client] - g_fStartTime[client], szTime, sizeof(szTime), 3);
+	CPrintToChat(client, "%s {grey}Elapsed time: [{lime}%s{grey}].", PREFIX, szTime);
 	
-	return (ppos[0] <= max[0] && ppos[0] >= min[0]) && (ppos[1] <= max[1] && ppos[1] >= min[1]) && (ppos[2] <= max[2] && ppos[2] >= min[2]);
+	ResetTimer(client);
+}
+
+bool TryStartingTimer(int client)
+{
+	float fPlayerMins[3];
+	float fPlayerMaxs[3];
+	GetClientMins(client, fPlayerMins);
+	GetClientMaxs(client, fPlayerMaxs);
+	float fPlayerOrigin[3];
+	GetClientAbsOrigin(client, fPlayerOrigin);
+	for (int i; i < 3; i++)
+	{
+		fPlayerMins[i] += fPlayerOrigin[i];
+		fPlayerMaxs[i] += fPlayerOrigin[i];
+	}
+	
+	if (!(AABBIntersecting(fPlayerMins, fPlayerMaxs, g_zoneStart[client].mins, g_zoneStart[client].maxs)))
+	{
+		return false;
+	}
+	g_fStartTime[client] = GetGameTime();
+	return true;
+}
+
+bool TryEndingTimer(int client)
+{
+	if (g_fStartTime[client] == 0.0)
+	{
+		return false;
+	}
+	float fPlayerMins[3];
+	float fPlayerMaxs[3];
+	GetClientMins(client, fPlayerMins);
+	GetClientMaxs(client, fPlayerMaxs);
+	float fPlayerOrigin[3];
+	GetClientAbsOrigin(client, fPlayerOrigin);
+	for (int i; i < 3; i++)
+	{
+		fPlayerMins[i] += fPlayerOrigin[i];
+		fPlayerMaxs[i] += fPlayerOrigin[i];
+	}
+	
+	if (!(AABBIntersecting(fPlayerMins, fPlayerMaxs, g_zoneEnd[client].mins, g_zoneEnd[client].maxs)))
+	{
+		return false;
+	}
+	g_fEndTime[client] = GetGameTime();
+	return true;
+}
+
+// resets timer stuff
+void ResetTimer(int client)
+{
+	g_fStartTime[client] = 0.0;
+	g_fEndTime[client] = 0.0;
 }
 
 bool IsTimerRunning(int client)
 {
-	// just a check so peanut brained idiots don't abuse this to see invisible walls
 	if (GetFeatureStatus(FeatureType_Native, "KZTimer_GetTimerStatus") == FeatureStatus_Available
 		&& KZTimer_GetTimerStatus(client))
 	{
@@ -430,12 +301,330 @@ bool IsTimerRunning(int client)
 	}
 }
 
-/*stock bool IsValidClient(int client)
+void SendBeamSquare(int client, int modelIndex, const float point[3], const int colour[4])
 {
-	return (client >= 1 && client <= MaxClients && IsValidEntity(client) && IsClientConnected(client) && IsClientInGame(client));
-}*/
+	float vertices[4][3];
+	RectangleVerticesFromPoint(vertices, point, view_as<float>({ -16.0, -16.0, 0.0 }), view_as<float>({ 16.0, 16.0, 0.0 }));
+	
+	float width = 2.0;
+	float life = 3.0;
+	
+	// send the square
+	for (int i; i < 4; i++)
+	{
+		int j = (i == 3) ? (0) : (i + 1);
+		TE_SetupBeamPoints(vertices[i], vertices[j], modelIndex, 0, 0, 0, life, width, width, 0, 0.0, colour, 0);
+		TE_SendToClient(client);
+	}
+	// make a nice cross
+	TE_SendBeamCross(client, point, modelIndex, 0, life, width, colour, width);
+}
 
-stock bool TraceEntityFilterPlayer(int entity, any data)
+void ResetVars(int client)
 {
-	return entity > MAXPLAYERS;
+	g_zoneStart[client].Reset();
+	g_zoneEnd[client].Reset();
+	
+	ResetTimer(client);
+}
+
+// checks if 2 AABBs are inside each other
+bool AABBIntersecting(float a_mins[3], float a_maxs[3], float b_mins[3], float b_maxs[3])
+{
+	return (a_mins[0] <= b_maxs[0] && a_maxs[0] >= b_mins[0]) &&
+		   (a_mins[1] <= b_maxs[1] && a_maxs[1] >= b_mins[1]) &&
+		   (a_mins[2] <= b_maxs[2] && a_maxs[2] >= b_mins[2]);
+}
+
+void CalculateAABBMinsMaxs(const float point1[3], const float point2[3], float mins[3], float maxs[3])
+{
+	for (int i; i < 3; i++)
+	{
+		float new_mins;
+		float new_maxs;
+		new_mins = point1[i] < point2[i] ? point1[i] : point2[i];
+		new_maxs = point1[i] > point2[i] ? point1[i] : point2[i];
+		mins[i] = new_mins;
+		maxs[i] = new_maxs;
+	}
+}
+
+public Action Command_SmZtopwatch(int client, int args)
+{
+	if (!IsValidClientExt(client, true))
+	{
+		CPrintToChat(client, "%s {darkred}You have to be alive to use this!", PREFIX);
+		return Plugin_Handled;
+	}
+	if (IsTimerRunning(client))
+	{
+		CPrintToChat(client, "%s {darkred}Your timer has to be off to use this!", PREFIX);
+		return Plugin_Handled;
+	}
+	Showmenu_Ztopwatch(client);
+	return Plugin_Handled;
+}
+
+// =========
+//   MENUS
+// =========
+
+void Showmenu_Ztopwatch(int client)
+{
+	Menu menu = new Menu(Menu_Ztopwatch, MENU_ACTIONS_ALL);
+	menu.Pagination = MENU_NO_PAGINATION;
+	menu.SetTitle("Ztopwatch");
+	menu.AddItem("0", "Edit zones");
+	
+	char szStartOnJump[64];
+	FormatEx(szStartOnJump, sizeof(szStartOnJump), "Start timer on jump - %s", g_bStartOnJump[client] ? "ON" : "OFF");
+	menu.AddItem("1", szStartOnJump);
+	
+	char szStopOnLand[64];
+	FormatEx(szStopOnLand, sizeof(szStopOnLand), "Stop timer on land - %s", g_bStopOnLand[client] ? "ON" : "OFF");
+	menu.AddItem("2", szStopOnLand);
+	
+	menu.ExitButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int Menu_Ztopwatch(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select:
+		{
+			char szInfo[16];
+			menu.GetItem(param2, szInfo, sizeof(szInfo));
+			int iInfo = StringToInt(szInfo);
+			switch (iInfo)
+			{
+				// Edit zones
+				case 0:
+				{
+					Showmenu_EditZones(param1);
+				}
+				// start on jump
+				case 1:
+				{
+					g_bStartOnJump[param1] = !g_bStartOnJump[param1];
+					Showmenu_Ztopwatch(param1);
+				}
+				// stop on land
+				case 2:
+				{
+					g_bStopOnLand[param1] = !g_bStopOnLand[param1];
+					Showmenu_Ztopwatch(param1);
+				}
+			}
+		}
+		
+		case MenuAction_End:
+		{
+			delete menu;
+		}
+	}
+	return 0;
+}
+
+void Showmenu_EditZones(int client)
+{
+	Menu menu = new Menu(Menu_EditZones, MENU_ACTIONS_ALL);
+	menu.SetTitle("Edit Zones");
+	
+	menu.AddItem("0", "Edit start zone");
+	menu.AddItem("1", "Edit end zone");
+	menu.AddItem("2", "Reset zones");
+	
+	menu.ExitBackButton = true;
+	menu.ExitButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int Menu_EditZones(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select:
+		{
+			char szInfo[16];
+			menu.GetItem(param2, szInfo, sizeof(szInfo));
+			int iInfo = StringToInt(szInfo);
+			switch (iInfo)
+			{
+				// edit start zone
+				case 0:
+				{
+					Showmenu_EditStartZone(param1);
+				}
+				// edit end zone
+				case 1:
+				{
+					Showmenu_EditEndZone(param1);
+				}
+				// reset zones
+				case 2:
+				{
+					g_zoneStart[param1].Reset();
+					g_zoneEnd[param1].Reset();
+					Showmenu_EditZones(param1);
+				}
+			}
+		}
+		case MenuAction_Cancel:
+		{
+			if (param2 == MenuCancel_ExitBack)
+			{
+				Showmenu_Ztopwatch(param1);
+			}
+			else
+			{
+				delete menu;
+			}
+		}
+		case MenuAction_End:
+		{
+			if (param2 == MenuEnd_ExitBack)
+			{
+				Showmenu_Ztopwatch(param1);
+			}
+			else
+			{
+				delete menu;
+			}
+		}
+	}
+	return 0;
+}
+
+void Showmenu_EditStartZone(int client)
+{
+	Menu menu = new Menu(Menu_EditStartZone, MENU_ACTIONS_ALL);
+	menu.SetTitle("Edit Start Zone");
+	
+	menu.AddItem("0", "Set point #1");
+	menu.AddItem("1", "Set point #2");
+	
+	menu.ExitButton = true;
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int Menu_EditStartZone(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select:
+		{
+			char szInfo[16];
+			menu.GetItem(param2, szInfo, sizeof(szInfo));
+			int iInfo = StringToInt(szInfo);
+			switch (iInfo)
+			{
+				// Set point #1
+				case 0:
+				{
+					g_zoneStart[param1].SetPoint1(param1);
+					g_zoneStart[param1].SendPoint1Square(param1, g_iBeam, C_WHITE);
+					Showmenu_EditStartZone(param1);
+				}
+				// Set point #2
+				case 1:
+				{
+					g_zoneStart[param1].SetPoint2(param1);
+					g_zoneStart[param1].SendPoint2Square(param1, g_iBeam, C_WHITE);
+					Showmenu_EditStartZone(param1);
+				}
+			}
+		}
+		case MenuAction_Cancel:
+		{
+			if (param2 == MenuCancel_ExitBack)
+			{
+				Showmenu_EditZones(param1);
+			}
+			else
+			{
+				delete menu;
+			}
+		}
+		case MenuAction_End:
+		{
+			if (param2 == MenuEnd_ExitBack)
+			{
+				Showmenu_EditZones(param1);
+			}
+			else
+			{
+				delete menu;
+			}
+		}
+	}
+	return 0;
+}
+
+void Showmenu_EditEndZone(int client)
+{
+	Menu menu = new Menu(Menu_EditEndZone, MENU_ACTIONS_ALL);
+	menu.SetTitle("Edit End Zone");
+	
+	menu.AddItem("0", "Set point #1");
+	menu.AddItem("1", "Set point #2");
+	
+	menu.ExitButton = true;
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int Menu_EditEndZone(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch (action)
+	{
+		case MenuAction_Select:
+		{
+			char szInfo[16];
+			menu.GetItem(param2, szInfo, sizeof(szInfo));
+			int iInfo = StringToInt(szInfo);
+			switch (iInfo)
+			{
+				// Set point #1
+				case 0:
+				{
+					g_zoneEnd[param1].SetPoint1(param1);
+					g_zoneEnd[param1].SendPoint1Square(param1, g_iBeam, C_WHITE);
+					Showmenu_EditEndZone(param1);
+				}
+				// Set point #2
+				case 1:
+				{
+					g_zoneEnd[param1].SetPoint2(param1);
+					g_zoneEnd[param1].SendPoint2Square(param1, g_iBeam, C_WHITE);
+					Showmenu_EditEndZone(param1);
+				}
+			}
+		}
+		case MenuAction_Cancel:
+		{
+			if (param2 == MenuCancel_ExitBack)
+			{
+				Showmenu_EditZones(param1);
+			}
+			else
+			{
+				delete menu;
+			}
+		}
+		case MenuAction_End:
+		{
+			if (param2 == MenuEnd_ExitBack)
+			{
+				Showmenu_EditZones(param1);
+			}
+			else
+			{
+				delete menu;
+			}
+		}
+	}
+	return 0;
 }
