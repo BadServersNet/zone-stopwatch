@@ -2,7 +2,7 @@
 #define PLUGIN_NAME				"Zone Stopwatch"
 #define PLUGIN_AUTHOR			"GameChaos"
 #define PLUGIN_DESCRIPTION		"A stopwatch that uses zones."
-#define PLUGIN_VERSION			"1.00"
+#define PLUGIN_VERSION			"1.01"
 #define PLUGIN_URL				"https://bitbucket.org/GameChaos/zone-stopwatch"
 
 #define C_WHITE					{ 255, 255, 255, 255 }
@@ -13,7 +13,11 @@
 
 #include <sourcemod>
 #include <sdktools>
-#include <gamechaos>
+
+#include <gamechaos/client>
+#include <gamechaos/misc>
+#include <gamechaos/strings>
+#include <gamechaos/tracing>
 #include <colors>
 
 #undef REQUIRE_PLUGIN
@@ -32,7 +36,6 @@ public Plugin myinfo =
 	url = PLUGIN_URL
 };
 
-bool g_bLateLoad;
 int g_iBeam;
 
 bool g_bStartOnJump[MAXPLAYERS + 1];
@@ -116,11 +119,6 @@ enum struct Zone
 
 Zone g_zoneStart[MAXPLAYERS + 1];
 Zone g_zoneEnd[MAXPLAYERS + 1];
-
-public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
-{
-	g_bLateLoad = late;
-}
 
 public void OnPluginStart()
 {
@@ -373,16 +371,20 @@ void Showmenu_Ztopwatch(int client)
 {
 	Menu menu = new Menu(Menu_Ztopwatch, MENU_ACTIONS_ALL);
 	menu.Pagination = MENU_NO_PAGINATION;
-	menu.SetTitle("Ztopwatch");
-	menu.AddItem("0", "Edit zones");
+	menu.SetTitle("Zone Stopwatch");
+	menu.AddItem("0", "Start corner #1");
+	menu.AddItem("1", "Start corner #2");
+	menu.AddItem("2", "End corner #1");
+	menu.AddItem("3", "End corner #2");
+	menu.AddItem("4", "Reset zones");
 	
 	char szStartOnJump[64];
 	FormatEx(szStartOnJump, sizeof(szStartOnJump), "Start timer on jump - %s", g_bStartOnJump[client] ? "ON" : "OFF");
-	menu.AddItem("1", szStartOnJump);
+	menu.AddItem("5", szStartOnJump);
 	
 	char szStopOnLand[64];
 	FormatEx(szStopOnLand, sizeof(szStopOnLand), "Stop timer on land - %s", g_bStopOnLand[client] ? "ON" : "OFF");
-	menu.AddItem("2", szStopOnLand);
+	menu.AddItem("6", szStopOnLand);
 	
 	menu.ExitButton = true;
 	menu.Display(client, MENU_TIME_FOREVER);
@@ -399,232 +401,58 @@ public int Menu_Ztopwatch(Menu menu, MenuAction action, int param1, int param2)
 			int iInfo = StringToInt(szInfo);
 			switch (iInfo)
 			{
-				// Edit zones
+				// Start corner #1
 				case 0:
 				{
-					Showmenu_EditZones(param1);
+					g_zoneStart[param1].SetPoint1(param1);
+					g_zoneStart[param1].SendPoint1Square(param1, g_iBeam, C_WHITE);
+					Showmenu_Ztopwatch(param1);
+				}
+				// Start corner #2
+				case 1:
+				{
+					g_zoneStart[param1].SetPoint2(param1);
+					g_zoneStart[param1].SendPoint2Square(param1, g_iBeam, C_WHITE);
+					Showmenu_Ztopwatch(param1);
+				}
+				// End corner #2
+				case 2:
+				{
+					g_zoneEnd[param1].SetPoint1(param1);
+					g_zoneEnd[param1].SendPoint1Square(param1, g_iBeam, C_WHITE);
+					Showmenu_Ztopwatch(param1);
+				}
+				// End corner #2
+				case 3:
+				{
+					g_zoneEnd[param1].SetPoint2(param1);
+					g_zoneEnd[param1].SendPoint2Square(param1, g_iBeam, C_WHITE);
+					Showmenu_Ztopwatch(param1);
+				}
+				// reset zones
+				case 4:
+				{
+					g_zoneStart[param1].Reset();
+					g_zoneEnd[param1].Reset();
+					Showmenu_Ztopwatch(param1);
 				}
 				// start on jump
-				case 1:
+				case 5:
 				{
 					g_bStartOnJump[param1] = !g_bStartOnJump[param1];
 					Showmenu_Ztopwatch(param1);
 				}
 				// stop on land
-				case 2:
+				case 6:
 				{
 					g_bStopOnLand[param1] = !g_bStopOnLand[param1];
 					Showmenu_Ztopwatch(param1);
 				}
 			}
 		}
-		
 		case MenuAction_End:
 		{
 			delete menu;
 		}
 	}
-	return 0;
-}
-
-void Showmenu_EditZones(int client)
-{
-	Menu menu = new Menu(Menu_EditZones, MENU_ACTIONS_ALL);
-	menu.SetTitle("Edit Zones");
-	
-	menu.AddItem("0", "Edit start zone");
-	menu.AddItem("1", "Edit end zone");
-	menu.AddItem("2", "Reset zones");
-	
-	menu.ExitBackButton = true;
-	menu.ExitButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-public int Menu_EditZones(Menu menu, MenuAction action, int param1, int param2)
-{
-	switch (action)
-	{
-		case MenuAction_Select:
-		{
-			char szInfo[16];
-			menu.GetItem(param2, szInfo, sizeof(szInfo));
-			int iInfo = StringToInt(szInfo);
-			switch (iInfo)
-			{
-				// edit start zone
-				case 0:
-				{
-					Showmenu_EditStartZone(param1);
-				}
-				// edit end zone
-				case 1:
-				{
-					Showmenu_EditEndZone(param1);
-				}
-				// reset zones
-				case 2:
-				{
-					g_zoneStart[param1].Reset();
-					g_zoneEnd[param1].Reset();
-					Showmenu_EditZones(param1);
-				}
-			}
-		}
-		case MenuAction_Cancel:
-		{
-			if (param2 == MenuCancel_ExitBack)
-			{
-				Showmenu_Ztopwatch(param1);
-			}
-			else
-			{
-				delete menu;
-			}
-		}
-		case MenuAction_End:
-		{
-			if (param2 == MenuEnd_ExitBack)
-			{
-				Showmenu_Ztopwatch(param1);
-			}
-			else
-			{
-				delete menu;
-			}
-		}
-	}
-	return 0;
-}
-
-void Showmenu_EditStartZone(int client)
-{
-	Menu menu = new Menu(Menu_EditStartZone, MENU_ACTIONS_ALL);
-	menu.SetTitle("Edit Start Zone");
-	
-	menu.AddItem("0", "Set point #1");
-	menu.AddItem("1", "Set point #2");
-	
-	menu.ExitButton = true;
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-public int Menu_EditStartZone(Menu menu, MenuAction action, int param1, int param2)
-{
-	switch (action)
-	{
-		case MenuAction_Select:
-		{
-			char szInfo[16];
-			menu.GetItem(param2, szInfo, sizeof(szInfo));
-			int iInfo = StringToInt(szInfo);
-			switch (iInfo)
-			{
-				// Set point #1
-				case 0:
-				{
-					g_zoneStart[param1].SetPoint1(param1);
-					g_zoneStart[param1].SendPoint1Square(param1, g_iBeam, C_WHITE);
-					Showmenu_EditStartZone(param1);
-				}
-				// Set point #2
-				case 1:
-				{
-					g_zoneStart[param1].SetPoint2(param1);
-					g_zoneStart[param1].SendPoint2Square(param1, g_iBeam, C_WHITE);
-					Showmenu_EditStartZone(param1);
-				}
-			}
-		}
-		case MenuAction_Cancel:
-		{
-			if (param2 == MenuCancel_ExitBack)
-			{
-				Showmenu_EditZones(param1);
-			}
-			else
-			{
-				delete menu;
-			}
-		}
-		case MenuAction_End:
-		{
-			if (param2 == MenuEnd_ExitBack)
-			{
-				Showmenu_EditZones(param1);
-			}
-			else
-			{
-				delete menu;
-			}
-		}
-	}
-	return 0;
-}
-
-void Showmenu_EditEndZone(int client)
-{
-	Menu menu = new Menu(Menu_EditEndZone, MENU_ACTIONS_ALL);
-	menu.SetTitle("Edit End Zone");
-	
-	menu.AddItem("0", "Set point #1");
-	menu.AddItem("1", "Set point #2");
-	
-	menu.ExitButton = true;
-	menu.ExitBackButton = true;
-	menu.Display(client, MENU_TIME_FOREVER);
-}
-
-public int Menu_EditEndZone(Menu menu, MenuAction action, int param1, int param2)
-{
-	switch (action)
-	{
-		case MenuAction_Select:
-		{
-			char szInfo[16];
-			menu.GetItem(param2, szInfo, sizeof(szInfo));
-			int iInfo = StringToInt(szInfo);
-			switch (iInfo)
-			{
-				// Set point #1
-				case 0:
-				{
-					g_zoneEnd[param1].SetPoint1(param1);
-					g_zoneEnd[param1].SendPoint1Square(param1, g_iBeam, C_WHITE);
-					Showmenu_EditEndZone(param1);
-				}
-				// Set point #2
-				case 1:
-				{
-					g_zoneEnd[param1].SetPoint2(param1);
-					g_zoneEnd[param1].SendPoint2Square(param1, g_iBeam, C_WHITE);
-					Showmenu_EditEndZone(param1);
-				}
-			}
-		}
-		case MenuAction_Cancel:
-		{
-			if (param2 == MenuCancel_ExitBack)
-			{
-				Showmenu_EditZones(param1);
-			}
-			else
-			{
-				delete menu;
-			}
-		}
-		case MenuAction_End:
-		{
-			if (param2 == MenuEnd_ExitBack)
-			{
-				Showmenu_EditZones(param1);
-			}
-			else
-			{
-				delete menu;
-			}
-		}
-	}
-	return 0;
 }
