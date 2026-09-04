@@ -1,0 +1,106 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_FILE: ztopwatch.sp
+  PLUGIN_NAME: zone-stopwatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check out GOKZ 3.6.4 build includes
+        uses: actions/checkout@v4
+        with:
+          repository: KZGlobalTeam/gokz
+          ref: 3.6.4
+          path: .build-deps/gokz
+
+      - name: Set up SourcePawn
+        uses: rumblefrog/setup-sp@v1.3.1
+        with:
+          version: "1.10.x"
+
+      - name: Resolve release tag
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        env:
+          MANUAL_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_tag="${MANUAL_TAG}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+          echo "RELEASE_TAG=${release_tag}" >> "${GITHUB_ENV}"
+
+      - name: Verify tag version
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        run: |
+          plugin_version="$(sed -n 's/^#define PLUGIN_VERSION[[:space:]]*"\(.*\)"/\1/p' "${PLUGIN_FILE}")"
+          major="${plugin_version%%.*}"
+          remainder="${plugin_version#*.}"
+          if [ "${#remainder}" -eq 2 ]; then
+            minor="${remainder%?}"
+            patch="${remainder#?}"
+            plugin_version="${major}.${minor}.${patch}"
+          elif [ "${plugin_version}" = "${remainder}" ]; then
+            plugin_version="${plugin_version}.0.0"
+          elif [ "${plugin_version#*.}" = "${plugin_version##*.}" ]; then
+            plugin_version="${plugin_version}.0"
+          fi
+          test "v${plugin_version}" = "${RELEASE_TAG}"
+
+      - name: Compile plugin
+        run: |
+          mkdir -p build/addons/sourcemod/plugins
+          spcomp -E -i.build-deps/gokz/addons/sourcemod/scripting/include -iinclude "${PLUGIN_FILE}" -o "build/addons/sourcemod/plugins/${PLUGIN_NAME}.smx"
+
+      - name: Package source
+        run: |
+          mkdir -p build/addons/sourcemod/scripting/include
+          cp "${PLUGIN_FILE}" build/addons/sourcemod/scripting/
+          cp -R include/. build/addons/sourcemod/scripting/include/
+          cp -R .build-deps/gokz/addons/sourcemod/scripting/include/. build/addons/sourcemod/scripting/include/
+          if [ -d "${PLUGIN_NAME}" ]; then
+            cp -R "${PLUGIN_NAME}" build/addons/sourcemod/scripting/
+          fi
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ github.sha }}
+          path: build
+
+      - name: Create release archives
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p releases
+          tar -C build -czf "releases/${PLUGIN_NAME}-${RELEASE_TAG}.tar.gz" .
+          cd build
+          zip -r "../releases/${PLUGIN_NAME}-${RELEASE_TAG}.zip" .
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: releases/*
