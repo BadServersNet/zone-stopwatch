@@ -2,7 +2,7 @@
 #define PLUGIN_NAME				"Zone Stopwatch"
 #define PLUGIN_AUTHOR			"GameChaos"
 #define PLUGIN_DESCRIPTION		"A stopwatch that uses zones."
-#define PLUGIN_VERSION			"1.01"
+#define PLUGIN_VERSION			"1.0.2"
 #define PLUGIN_URL				"https://bitbucket.org/GameChaos/zone-stopwatch"
 
 #define C_WHITE					{ 255, 255, 255, 255 }
